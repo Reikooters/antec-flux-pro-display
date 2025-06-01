@@ -1,0 +1,9 @@
+[package]
+name = "antec-flux-pro-display"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.98"
+sensors = "0.2.2"
+rusb = "0.9.4"
