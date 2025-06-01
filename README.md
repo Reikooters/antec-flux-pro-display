@@ -65,7 +65,7 @@ EOL'
 Download latest release from https://github.com/Reikooters/antec-flux-pro-display/releases
 
 ```shell
-curl -L -o antec-flux-pro-display "https://github.com/Reikooters/antec-flux-pro-display/releases/download/latest/antec-flux-pro-display"
+curl -L -o antec-flux-pro-display "https://github.com/Reikooters/antec-flux-pro-display/releases/download/v1.0/antec-flux-pro-display"
 sudo install antec-flux-pro-display /usr/bin/
 ```
 
@@ -294,12 +294,14 @@ gpu_temp_type=edge
 update_interval=1000
 ```
 
+Press Ctrl+X to quit Nano, pressing Y to say Yes to saving the file, and press Enter when prompted for the path to write to.
+
 ### Install the service
 
 1. Download the `antec-flux-pro-display` binary from [Releases](https://github.com/Reikooters/antec-flux-pro-display/releases). Then use `install` to copy it to `/usr/bin/antec-flux-pro-display` and make the file executable. Example:
 
 ```shell
-curl -L -o antec-flux-pro-display "https://github.com/Reikooters/antec-flux-pro-display/releases/download/latest/antec-flux-pro-display"
+curl -L -o antec-flux-pro-display "https://github.com/Reikooters/antec-flux-pro-display/releases/download/v1.0/antec-flux-pro-display"
 sudo install antec-flux-pro-display /usr/bin/
 ```
 
@@ -329,6 +331,8 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 ```
+
+Press Ctrl+X to quit Nano, pressing Y to say Yes to saving the file, and press Enter when prompted for the path to write to.
 
 3. Start the service and enable it to run at boot:
 
