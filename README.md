@@ -224,7 +224,7 @@ Press Ctrl+X to quit Nano, pressing Y to say Yes to saving the file, and press E
 > gpu_device=amdgpu
 > gpu_temp_type=edge
 > gpu_vendor_id=1002
-> gpu_device_id=7500
+> gpu_device_id=7550
 > 
 > # Update interval in milliseconds
 > update_interval=1000
