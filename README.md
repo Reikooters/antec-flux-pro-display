@@ -11,90 +11,24 @@ This project builds upon [nishtahir/antec-flux-pro-display](https://github.com/n
 
 ## Table of Contents
 
-- [Quick Start](#quick-start)
-- [System Requirements](#system-requirements)
 - [Features](#features)
+- [System Requirements](#system-requirements)
+- [Installation Instructions](#installation-instructions)
+- [Troubleshooting](#troubleshooting)
+- [Configuration](#configuration)
+- [Uninstalling](#uninstalling)
 - [Development](#development)
 - [Contributing](#contributing)
-- [Configuration](#configuration)
-- [Troubleshooting](#troubleshooting)
-- [Detailed Installation Instructions](#detailed-installation-instructions)
-- [Uninstalling](#uninstalling)
 - [Credits](#credits)
 - [License](#license)
 
-## Quick Start
+## Features
 
-Quick setup for advanced users. See [Detailed Installation Instructions](#detailed-installation-instructions) section for more details.
-
-### 1. Set up USB permissions
-
-```shell
-sudo bash -c 'cat > /etc/udev/rules.d/99-antec-flux-pro-display.rules << EOL
-SUBSYSTEM=="usb", ATTR{idVendor}=="2022", ATTR{idProduct}=="0522", MODE="0666", GROUP="plugdev", TAG+="uaccess"
-EOL'
-sudo udevadm control --reload-rules && sudo udevadm trigger
-```
-
-### 2. Find your sensor names
-
-```shell
-sensors
-```
-
-### 3. Configure sensors
-
-```shell
-sudo mkdir -p /etc/antec-flux-pro-display/
-sudo bash -c 'cat > /etc/antec-flux-pro-display/config.conf << EOL
-# CPU device for temperature monitoring
-cpu_device=k10temp
-cpu_temp_type=tctl
-
-# GPU device for temperature monitoring
-gpu_device=amdgpu
-gpu_temp_type=edge
-
-# Update interval in milliseconds
-update_interval=1000
-EOL'
-```
-
-### 4. Download and install binary
-
-Download latest release from https://github.com/Reikooters/antec-flux-pro-display/releases
-
-```shell
-curl -L -o antec-flux-pro-display "https://github.com/Reikooters/antec-flux-pro-display/releases/download/v1.0/antec-flux-pro-display"
-sudo install antec-flux-pro-display /usr/bin/
-```
-
-### 5. Create and start the service
-
-```shell
-sudo bash -c 'cat > /etc/systemd/system/antec-flux-pro-display.service << EOL
-[Unit]
-Description=Antec Flux Pro Display Service
-StartLimitIntervalSec=0
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/antec-flux-pro-display
-Restart=always
-RestartSec=5
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-NoNewPrivileges=true
-
-[Install]
-WantedBy=multi-user.target
-EOL'
-
-sudo systemctl daemon-reload
-sudo systemctl start antec-flux-pro-display
-sudo systemctl enable antec-flux-pro-display
-```
+- Real-time CPU and GPU temperature monitoring
+- Configurable sensor sources for maximum compatibility
+- Systemd service for automatic startup
+- Low resource usage through Rust implementation
+- Easy configuration through a simple config file
 
 ## System Requirements
 
@@ -114,72 +48,17 @@ sudo systemctl enable antec-flux-pro-display
   | Arch Linux | `lm_sensors`, `usbutils` |
   | Fedora | `lm_sensors`, `usbutils` |
 
+> [!TIP]
+> The `usbutils` package isn't technically required for the application to function, it's just used during the installation steps to give you the `lsusb` command, which is used to check to ensure the case display is correctly plugged into your motherboard and recognised.
+
 ### Dependencies
 
 - `libsensors` (provided by `lm-sensors` package)
 - Proper USB permissions (configured during installation)
 
-## Features
+## Installation Instructions
 
-- Real-time CPU and GPU temperature monitoring
-- Configurable sensor sources for maximum compatibility
-- Systemd service for automatic startup
-- Low resource usage through Rust implementation
-- Easy configuration through a simple config file
-
-## Development
-
-### Building from Source
-
-```shell
-git clone https://github.com/YOUR_USERNAME/antec-flux-pro-display
-cd antec-flux-pro-display
-cargo build --release
-```
-
-### Dependencies
-
-- Rust 1.87.0 or later
-- Libraries: anyhow 1.0.98, rusb 0.9.4, sensors 0.2.2
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
-
-## Configuration
-
-The configuration file (`/etc/antec-flux-pro-display/config.conf`) supports the following options:
-
-| Option | Description | Example |
-|--------|-------------|---------|
-| cpu_device | CPU temperature device name | `k10temp` |
-| cpu_temp_type | CPU temperature sensor label | `tctl` |
-| gpu_device | GPU temperature device name | `amdgpu` |
-| gpu_temp_type | GPU temperature sensor label | `edge` |
-| update_interval | Update frequency in milliseconds | `1000` |
-
-## Troubleshooting
-
-### Display Not Updating
-
-- Check if the service is running: `systemctl status antec-flux-pro-display`
-- Verify USB permissions: `ls -l /dev/bus/usb/$(lsusb -d 2022:0522 | cut -d' ' -f2,4 | sed 's/:/\//')`
-- Check sensor availability: `sensors`
-
-### Wrong Temperature Readings
-
-- Verify sensor names in config match output of `sensors` command
-- Try different sensor labels if available (e.g., `Tdie` instead of `Tctl` for AMD CPUs)
-
-### Service Won't Start
-
-- Check logs: `journalctl -u antec-flux-pro-display -n 50 --no-pager`
-- Verify config file syntax
-- Ensure USB device is connected
-
-## Detailed Installation Instructions
-
-### Set up permission to write to the display
+### 1. Set up permission to write to the display
 
 1. Ensure the Antec Flux Pro case display is connected to your computer:
 
@@ -204,31 +83,14 @@ sudo nano /etc/udev/rules.d/99-antec-flux-pro-display.rules
 In this file, copy and paste the following content:
 
 ```
-SUBSYSTEM=="usb", ATTR{idVendor}=="2022", ATTR{idProduct}=="0522", MODE="0666", GROUP="plugdev"
-SUBSYSTEM=="usb", ATTR{idVendor}=="2022", ATTR{idProduct}=="0522", MODE="0666", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="2022", ATTR{idProduct}=="0522", MODE="0660", TAG+="uaccess"
 ```
 
 Press Ctrl+X to quit Nano, pressing Y to say Yes to saving the file, and press Enter when prompted for the path to write to.
 
-> [!NOTE]
-> If you are using a non-systemd Linux distribution, you'll need to also add yourself to the `plugdev` group using the below command.
->
-> ```shell
-> sudo usermod -a -G plugdev $USER
-> ```
->
-> On KDE (or any modern systemd-based desktop environment), you do NOT need to perform this step. This is because the `TAG+="uaccess"` in the second rule above automatically grants permission for the user currently logged into the local desktop session. Older systems will use the first rule, while modern systemd-based systems will use the second rule.
->
-> Note: You'll need to log out and log back in for the group change to take effect.
+3. You must **reboot your computer** for the permission change to take effect.
 
-3. Reload the udev rules:
-
-```sh
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-```
-
-### Configure sensors
+### 2. Configure sensors
 
 1. Identify the names of the sensors for your CPU and GPU. To do this, first run the following command:
 
@@ -269,7 +131,7 @@ sclk:          24 MHz
 mclk:         456 MHz 
 ```
 
-Take note of the device name (the part before `-pci` in each heading) as well as the sensor label (next to the temperature).
+Take note of the device name (the part before `-pci` in each heading) as well as the sensor label (to the left of the temperature).
 
 For my computer, my CPU device name is `k10temp` and sensor name is `Tctl`. For my GPU, the device name is `amdgpu` and sensor name is `edge`.
 
@@ -296,12 +158,111 @@ update_interval=1000
 
 Press Ctrl+X to quit Nano, pressing Y to say Yes to saving the file, and press Enter when prompted for the path to write to.
 
-### Install the service
+> [!NOTE]
+> #### Note if you have two devices with the same name:
+> 
+> If you have two devices with the same name, for example if you have both an AMD GPU and an AMD CPU with integrated graphics enabled, you might have two devices both named `amdgpu`. This means you'll need to also add the device's VendorId and DeviceId to the configuration in order to more explicitly specify the device.
+>
+> Run the following in your teminal:
+>
+> ```sh
+> for d in /sys/class/hwmon/hwmon*; do
+>     # Display the basic device info
+>     echo -n "$(basename $d): $(cat $d/name) | "
+>     [ -f $d/device/vendor ] && echo -n "Vendor: $(cat $d/device/vendor) Device: $(cat $d/device/device) " || echo -n "Virtual Device "
+>     echo "---"
+> 
+>     # Display each temperature sensor found in this hwmon directory
+>     for t in $d/temp*_input; do
+>         if [ -f "$t" ]; then
+>             # Get the label (e.g., 'edge') or use 'tempX' if no label exists
+>             label_file="${t%_input}_label"
+>             if [ -f "$label_file" ]; then
+>                 label=$(cat "$label_file")
+>             else
+>                 label=$(basename "${t%_input}")
+>             fi
+>             
+>             # Read the temperature (stored in millidegrees Celsius)
+>             temp_raw=$(cat "$t")
+>             temp_c=$((temp_raw / 1000))
+> 
+>             echo "  └─ $label: ${temp_c}°C"
+>         fi
+>     done
+> done
+> ```
+>
+> Output should be similar to the below:
+>
+> ```
+> hwmon0: nvme | Virtual Device ---
+>   └─ Composite: 42°C
+>   └─ Sensor 1: 42°C
+> hwmon1: amdgpu | Vendor: 0x1002 Device: 0x7550 ---
+>   └─ edge: 39°C
+>   └─ junction: 41°C
+>   └─ mem: 58°C
+> hwmon2: k10temp | Vendor: 0x1022 Device: 0x14e3 ---
+>   └─ Tctl: 58°C
+>   └─ Tccd1: 48°C
+>   └─ Tccd2: 66°C
+> hwmon3: r8169_0_1000:00 | Virtual Device ---
+>   └─ temp1: 48°C
+> ```
+>
+> Set up your configuration as follows, adding the `gpu_vendor_id` and `gpu_device_id` configuration options, shown below. (The program will accept the configuration with or without the `0x`)
+>
+> ```conf
+> # CPU device for temperature monitoring
+> cpu_device=k10temp
+> cpu_temp_type=tctl
+> cpu_vendor_id=1022
+> cpu_device_id=14e3
+> 
+> # GPU device for temperature monitoring
+> gpu_device=amdgpu
+> gpu_temp_type=edge
+> gpu_vendor_id=1002
+> gpu_device_id=7500
+> 
+> # Update interval in milliseconds
+> update_interval=1000
+> ```
+> As shown above, there are also configuration options available for `cpu_vendor_id` and `cpu_device_id` - most people won't need these. They are provided in case you want to show some other device with a conflicting name in the CPU position on the case display, such as a second GPU.
+>
+> #### If you need to know more details about a specific device (which is which), there is a round about way to do this:
+>
+> 1. Get the bus ID for the device using the following command, where `hwmon1` comes from the output of the command above where you got the vendor ID and device ID. If yours is something else, such as `hwmon2`, then replace it in the command below.
+>
+> ```sh
+> ls -l /sys/class/hwmon/hwmon1/device
+> ```
+>
+> Output should be similar to this:
+>
+> ```
+> lrwxrwxrwx 1 root root 0 Dec 15 21:31 /sys/class/hwmon/hwmon1/device -> ../../../0000:03:00.0
+> ```
+>
+> 2. Take the bus ID (string at the end of the output above) and use the `lspci` command as follows:
+>
+> ```sh
+> lspci -s 0000:03:00.0
+> ```
+>
+> This will output a more meaningful device name:
+>
+> ```sh
+> 03:00.0 VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] Navi 48 [Radeon RX 9070/9070 XT/9070 GRE] (rev c0)
+> ```
+
+### 3. Download the application and install the service
 
 1. Download the `antec-flux-pro-display` binary from [Releases](https://github.com/Reikooters/antec-flux-pro-display/releases). Then use `install` to copy it to `/usr/bin/antec-flux-pro-display` and make the file executable. Example:
 
 ```shell
-curl -L -o antec-flux-pro-display "https://github.com/Reikooters/antec-flux-pro-display/releases/download/v1.0/antec-flux-pro-display"
+curl -L -o antec-flux-pro-display "https://github.com/Reikooters/antec-flux-pro-display/releases/download/v1.1/antec-flux-pro-display"
 sudo install antec-flux-pro-display /usr/bin/
 ```
 
@@ -344,9 +305,46 @@ sudo systemctl enable antec-flux-pro-display
 
 The display should now be working.
 
+## Troubleshooting
+
+### Display Not Updating
+
+- Check if the service is running: `systemctl status antec-flux-pro-display`
+- Check to ensure you created the file for the udev rule correctly (as per instructions). Remember that **a reboot is required** in order for the change to take effect.
+- Check sensor availability: `sensors`. If your computer doesn't have this command avaiable, installed the `lm-sensors` package from your distribution's package manager.
+
+### Wrong Temperature Readings
+
+- Verify sensor names in config match output of the `sensors` command
+- Ensure the correct sensor label is used (e.g., `Tctl` for AMD CPUs)
+- See the notes in installation steps about specifying the VendorId and DeviceId if you have two devices with the same name, e.g. two `amdgpu`.
+
+## Configuration
+
+The configuration file `/etc/antec-flux-pro-display/config.conf` supports the following options:
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| cpu_device | CPU temperature device name | `k10temp` |
+| cpu_temp_type | CPU temperature sensor label | `tctl` |
+| cpu_vendor_id | **Optional**, use it in addition to the name if you have two devices with the same name | `1022` |
+| cpu_device_id | **Optional**, use it in addition to the name if you have two devices with the same name | `14e3` |
+| gpu_device | GPU temperature device name | `amdgpu` |
+| gpu_temp_type | GPU temperature sensor label | `edge` |
+| gpu_vendor_id | **Optional**, use it in addition to the name if you have two devices with the same name | `1002` |
+| gpu_device_id | **Optional**, use it in addition to the name if you have two devices with the same name | `7550` |
+| update_interval | Update frequency in milliseconds | `1000` |
+
+### Service Won't Start
+
+- Check logs: `journalctl -u antec-flux-pro-display -n 50 --no-pager`
+- Verify config file syntax
+- Ensure USB device is connected (as per instructions)
+- Ensure you have **rebooted your computer** if you only just created the udev rules file.
+
 ## Uninstalling
 
-To uninstall, stop and disable the service, then remove the files which we created during the installation steps.
+To uninstall, stop and disable the service, then remove the files which you created during the installation steps.
 
 ```shell
 sudo systemctl stop antec-flux-pro-display
@@ -359,6 +357,25 @@ sudo systemctl daemon-reload
 sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
+
+## Development
+
+### Building from Source
+
+```shell
+git clone https://github.com/Reikooters/antec-flux-pro-display
+cd antec-flux-pro-display
+cargo build --release
+```
+
+### Dependencies
+
+- Rust 1.87.0 or later
+- Libraries: anyhow 1.0.100, rusb 0.9.4, sensors 0.2.2
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
 
 ## Credits
 
