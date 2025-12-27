@@ -49,9 +49,26 @@ impl UsbDevice {
         }
     }
 
-    pub fn send_payload(&self, cpu_temp: &Option<f64>, gpu_temp: &Option<f64>) {
-        let payload = generate_payload(cpu_temp, gpu_temp);
+    pub fn claim_interface(&self) {
+        // Free the interface if its active already, then claim it.
+        if let Ok(active) = self.handle.kernel_driver_active(0) {
+            if active {
+                self.handle.detach_kernel_driver(0).ok();
+            }
+        }
+        match self.handle.claim_interface(0) {
+            Ok(_) => (),
+            Err(e) => {
+                eprintln!("Failed to claim interface: {}", e);
+                std::process::exit(1);
+            }
 
+        }
+    }
+
+    pub fn send_payload(&self, cpu_temp: &Option<f64>, gpu_temp: &Option<f64>) {
+
+        let payload = generate_payload(cpu_temp, gpu_temp);
         let config_desc = match self.handle.device().config_descriptor(0) {
             Ok(desc) => desc,
             Err(e) => {
@@ -72,10 +89,9 @@ impl UsbDevice {
             // This appears to be the correct endpoint on my machine
             // Seems reasonable as the default
             .unwrap_or(0x03);
-
         match self
             .handle
-            .write_bulk(endpoint_address, &payload, Duration::from_millis(1000))
+            .write_interrupt(endpoint_address, &payload, Duration::from_millis(1000))
         {
             Ok(_) => (),
             Err(e) => {
