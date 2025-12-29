@@ -402,6 +402,8 @@ update_interval=1000"#;
             let (c, g) = discover_features(&sensors, &config);
             cpu_feature = c;
             gpu_feature = g;
+
+            device.claim_interface();
         }
     }
 }
