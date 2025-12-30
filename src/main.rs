@@ -331,6 +331,9 @@ update_interval=1000"#;
 
     let device = UsbDevice::open(usb::VENDOR_ID, usb::PRODUCT_ID)?;
 
+    // Need to claim the interface to continue.
+    device.claim_interface();
+
     let (mut cpu_feature, mut gpu_feature) = discover_features(&sensors, &config);
 
     if cpu_feature.is_none() && gpu_feature.is_none() {
@@ -399,6 +402,8 @@ update_interval=1000"#;
             let (c, g) = discover_features(&sensors, &config);
             cpu_feature = c;
             gpu_feature = g;
+
+            device.claim_interface();
         }
     }
 }
