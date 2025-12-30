@@ -317,12 +317,6 @@ update_interval=1000"#;
         }
     };
 
-    // Pre-compute lowercase versions of search patterns
-    let cpu_device_lower = config.cpu_device.to_lowercase();
-    let gpu_device_lower = config.gpu_device.to_lowercase();
-    let cpu_temp_type_lower = config.cpu_temp_type.to_lowercase();
-    let gpu_temp_type_lower = config.gpu_temp_type.to_lowercase();
-
     // Print initial information
     println!("Starting temperature monitor...");
     println!("CPU device: {} (type: {})", config.cpu_device, config.cpu_temp_type);
@@ -368,22 +362,22 @@ update_interval=1000"#;
             (Some(_cpu), None) => {
                 #[cfg(debug_assertions)]
                 println!("[{}] CPU Temperature: {:.1}°C  |  GPU device '{}', temp type '{}' not found!",
-                         get_time_string(), _cpu, gpu_device_lower, gpu_temp_type_lower);
+                         get_time_string(), _cpu, config.gpu_device, config.gpu_temp_type);
                 #[cfg(not(debug_assertions))]
                 eprintln!("[{}] GPU device '{}', temp type '{}' not found!",
-                          get_time_string(), gpu_device_lower, gpu_temp_type_lower);
+                          get_time_string(), config.gpu_device, config.gpu_temp_type);
             },
             (None, Some(_gpu)) => {
                 #[cfg(debug_assertions)]
                 println!("[{}] CPU device '{}', temp type '{}' not found!  |  GPU Temperature: {:.1}°C",
-                         get_time_string(), cpu_device_lower, cpu_temp_type_lower, _gpu);
+                         get_time_string(), config.cpu_device, config.cpu_temp_type, _gpu);
                 #[cfg(not(debug_assertions))]
                 eprintln!("[{}] CPU device '{}', temp type '{}' not found!",
-                          get_time_string(), cpu_device_lower, cpu_temp_type_lower);
+                          get_time_string(), config.cpu_device, config.cpu_temp_type);
             },
             (None, None) => {
                 eprintln!("[{}] CPU device '{}', temp type '{}' not found!  |  GPU device '{}', temp type '{}' not found!",
-                          get_time_string(), cpu_device_lower, cpu_temp_type_lower, gpu_device_lower, gpu_temp_type_lower);
+                          get_time_string(), config.cpu_device, config.cpu_temp_type, config.gpu_device, config.gpu_temp_type);
             }
         }
 
