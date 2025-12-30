@@ -265,7 +265,16 @@ fn matches_pci_id(chip: &Chip, expected_vendor: &str, expected_device: &str) -> 
     false
 }
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 fn main() -> Result<(), Box<dyn Error>> {
+    // If --version argument is passed, print version and exit
+    let args: Vec<String> = std::env::args().collect();
+    if args.contains(&"--version".to_string()) {
+        println!("antec-flux-pro-display {}", VERSION);
+        return Ok(());
+    }
+
     // Initialize sensors first
     let mut sensors = Sensors::new();
 
