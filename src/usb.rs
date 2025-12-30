@@ -67,8 +67,8 @@ impl UsbDevice {
     }
 
     pub fn send_payload(&self, cpu_temp: &Option<f64>, gpu_temp: &Option<f64>) {
-
         let payload = generate_payload(cpu_temp, gpu_temp);
+
         let config_desc = match self.handle.device().config_descriptor(0) {
             Ok(desc) => desc,
             Err(e) => {
@@ -76,7 +76,8 @@ impl UsbDevice {
                 std::process::exit(1);
             }
         };
-        // Find the first bulk OUT endpoint
+
+        // Find the first interrupt OUT endpoint
         let endpoint_address = config_desc
             .interfaces()
             .flat_map(|interface| interface.descriptors())
@@ -89,13 +90,14 @@ impl UsbDevice {
             // This appears to be the correct endpoint on my machine
             // Seems reasonable as the default
             .unwrap_or(0x03);
+
         match self
             .handle
             .write_interrupt(endpoint_address, &payload, Duration::from_millis(1000))
         {
             Ok(_) => (),
             Err(e) => {
-                eprintln!("Error writing bulk: {:?}", e);
+                eprintln!("Error writing interrupt: {:?}", e);
                 std::process::exit(1);
             }
         }
