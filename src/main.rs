@@ -23,6 +23,11 @@ struct AppConfig {
     update_interval: u64,
 }
 
+enum DeviceType {
+    Cpu,
+    Gpu,
+}
+
 impl AppConfig {
     fn new() -> io::Result<Self> {
         let config_dir = PathBuf::from("/etc/antec-flux-pro-display");
@@ -98,6 +103,22 @@ impl AppConfig {
             gpu_device_id,
             update_interval,
         })
+    }
+
+    fn format_device_info(&self, device_type: DeviceType) -> String {
+        let (name, temp_type, vendor, device) = match device_type {
+            DeviceType::Cpu => (&self.cpu_device, &self.cpu_temp_type, &self.cpu_vendor_id, &self.cpu_device_id),
+            DeviceType::Gpu => (&self.gpu_device, &self.gpu_temp_type, &self.gpu_vendor_id, &self.gpu_device_id),
+        };
+
+        let mut out = format!("{} (type: {})", name, temp_type);
+        if !vendor.is_empty() || !device.is_empty() {
+            out.push_str(&format!(" [ID: {}:{}]",
+                                  if vendor.is_empty() { "*" } else { vendor },
+                                  if device.is_empty() { "*" } else { device }
+            ));
+        }
+        out
     }
 }
 
@@ -267,8 +288,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         let device_hex = fs::read_to_string(device_path.join("device")).unwrap_or_default();
         let vendor_trimmed = vendor_hex.trim_start_matches("0x").trim();
         let device_trimmed = device_hex.trim_start_matches("0x").trim();
-        println!("  VendorId: {}", vendor_trimmed);
-        println!("  DeviceId: {}", device_trimmed);
+
+        if !vendor_trimmed.is_empty() {
+            println!("  VendorId: {}", vendor_trimmed);
+        }
+
+        if !device_trimmed.is_empty() {
+            println!("  DeviceId: {}", device_trimmed);
+        }
+
         println!("  Temperatures:");
         for feature in chip {
             if let Some(label) = feature.get_label().ok() {
@@ -319,8 +347,8 @@ update_interval=1000"#;
 
     // Print initial information
     println!("Starting temperature monitor...");
-    println!("CPU device: {} (type: {})", config.cpu_device, config.cpu_temp_type);
-    println!("GPU device: {} (type: {})", config.gpu_device, config.gpu_temp_type);
+    println!("CPU device: {}", config.format_device_info(DeviceType::Cpu));
+    println!("GPU device: {}", config.format_device_info(DeviceType::Gpu));
     println!("Update interval: {}ms\n", config.update_interval);
 
     let device = UsbDevice::open(usb::VENDOR_ID, usb::PRODUCT_ID)?;
@@ -345,39 +373,42 @@ update_interval=1000"#;
         // Handle missing sensors (e.g., driver unloaded/reloaded during sleep)
         if cpu_temp.is_none() && gpu_temp.is_none() {
             #[cfg(debug_assertions)]
-            eprintln!("Sensors lost. Attempting re-discovery...");
+            eprintln!("[{}] Sensors lost. Attempting re-discovery...",
+                      get_time_string());
 
             sensors = Sensors::new(); // Refresh libsensors internal state
             let (c, g) = discover_features(&sensors, &config);
             cpu_feature = c;
             gpu_feature = g;
+
+            device.claim_interface();
         }
 
         match (cpu_temp, gpu_temp) {
             (Some(_cpu), Some(_gpu)) => {
                 #[cfg(debug_assertions)]
-                println!("[{}] CPU Temperature: {:.1}°C  |  GPU Temperature: {:.1}°C",
+                println!("[{}] CPU: {:.1}°C  |  GPU: {:.1}°C",
                          get_time_string(), _cpu, _gpu);
             },
             (Some(_cpu), None) => {
                 #[cfg(debug_assertions)]
-                println!("[{}] CPU Temperature: {:.1}°C  |  GPU device '{}', temp type '{}' not found!",
-                         get_time_string(), _cpu, config.gpu_device, config.gpu_temp_type);
+                println!("[{}] CPU: {:.1}°C  |  GPU device {} not found!",
+                         get_time_string(), _cpu, config.format_device_info(DeviceType::Gpu));
                 #[cfg(not(debug_assertions))]
-                eprintln!("[{}] GPU device '{}', temp type '{}' not found!",
-                          get_time_string(), config.gpu_device, config.gpu_temp_type);
+                eprintln!("[{}] GPU device {} not found!",
+                          get_time_string(), config.format_device_info(DeviceType::Gpu));
             },
             (None, Some(_gpu)) => {
                 #[cfg(debug_assertions)]
-                println!("[{}] CPU device '{}', temp type '{}' not found!  |  GPU Temperature: {:.1}°C",
-                         get_time_string(), config.cpu_device, config.cpu_temp_type, _gpu);
+                println!("[{}] CPU device {} not found!  |  GPU: {:.1}°C",
+                         get_time_string(), config.format_device_info(DeviceType::Cpu), _gpu);
                 #[cfg(not(debug_assertions))]
-                eprintln!("[{}] CPU device '{}', temp type '{}' not found!",
-                          get_time_string(), config.cpu_device, config.cpu_temp_type);
+                eprintln!("[{}] CPU device {} not found!",
+                          get_time_string(), config.format_device_info(DeviceType::Cpu));
             },
             (None, None) => {
-                eprintln!("[{}] CPU device '{}', temp type '{}' not found!  |  GPU device '{}', temp type '{}' not found!",
-                          get_time_string(), config.cpu_device, config.cpu_temp_type, config.gpu_device, config.gpu_temp_type);
+                eprintln!("[{}] CPU device {} not found!  |  GPU device {} not found!",
+                          get_time_string(), config.format_device_info(DeviceType::Cpu), config.format_device_info(DeviceType::Gpu));
             }
         }
 
@@ -390,7 +421,8 @@ update_interval=1000"#;
         // If we slept for much longer than intended, assume the PC was suspended
         if start_time.elapsed() > interval + Duration::from_secs(2) {
             #[cfg(debug_assertions)]
-            println!("Wake-up detected. Refreshing hardware handles...");
+            println!("[{}] Wake-up detected. Refreshing hardware handles...",
+                     get_time_string());
 
             sensors = Sensors::new();
             let (c, g) = discover_features(&sensors, &config);
