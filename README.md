@@ -193,7 +193,7 @@ Press Ctrl+X to quit Nano, pressing Y to say Yes to saving the file, and press E
 > done
 > ```
 >
-> Output should be similar to the below:
+> Output should be similar to the below.
 >
 > ```
 > hwmon0: nvme | Virtual Device ---
@@ -262,7 +262,7 @@ Press Ctrl+X to quit Nano, pressing Y to say Yes to saving the file, and press E
 1. Download the `antec-flux-pro-display` binary from [Releases](https://github.com/Reikooters/antec-flux-pro-display/releases). Then use `install` to copy it to `/usr/bin/antec-flux-pro-display` and make the file executable. Example:
 
 ```shell
-curl -L -o antec-flux-pro-display "https://github.com/Reikooters/antec-flux-pro-display/releases/download/v1.1/antec-flux-pro-display"
+curl -L -o antec-flux-pro-display "https://github.com/Reikooters/antec-flux-pro-display/releases/download/v1.2/antec-flux-pro-display"
 sudo install antec-flux-pro-display /usr/bin/
 ```
 
@@ -354,8 +354,6 @@ sudo rm /etc/antec-flux-pro-display/config.conf
 sudo rm /etc/systemd/system/antec-flux-pro-display.service
 sudo rm /usr/bin/antec-flux-pro-display
 sudo systemctl daemon-reload
-sudo udevadm control --reload-rules
-sudo udevadm trigger
 ```
 
 ## Development
@@ -380,13 +378,22 @@ Contributions are welcome! Please feel free to submit a Pull Request. For major 
 ## Credits
 
 ### Original Projects
+
 - [nishtahir/antec-flux-pro-display](https://github.com/nishtahir/antec-flux-pro-display) - Original Rust implementation
 - [AKoskovich/antec_flux_pro_display_service](https://github.com/AKoskovich/antec_flux_pro_display_service) - Original concept
 
 ### Code Attribution
+
 - The `usb.rs` module is adapted from nishtahir's project ([source](https://github.com/nishtahir/antec-flux-pro-display/blob/main/src/usb.rs)), with modifications to use `f64` for temperature variables
 
+### Contributors
+
+- [@LostSyndicate](https://github.com/LostSyndicate)
+  - Improved USB compatibility by implementing device claiming to prevent OS permission conflicts.
+  - Refactored `send_payload` to use `write_interrupt` to correctly match the USB endpoint transfer type.
+
 ### Development Tools
+
 - Developed using RustRover IDE with JetBrains AI Assistant plugin
 - AI assistance provided by Claude 3.5 Sonnet
 
