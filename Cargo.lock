@@ -7,6 +7,7 @@ name = "antec-flux-pro-display"
 version = "1.2.0"
 dependencies = [
  "anyhow",
+ "libsensors-sys",
  "rusb",
  "sensors",
 ]

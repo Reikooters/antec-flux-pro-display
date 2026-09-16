@@ -92,7 +92,7 @@ Press Ctrl+X to quit Nano, pressing Y to say Yes to saving the file, and press E
 
 ### 2. Configure sensors
 
-1. Identify the names of the sensors for your CPU and GPU. To do this, first run the following command:
+1. Identify the names of the sensors for your CPU and GPU. Run `antec-flux-pro-display --list-sensors`, which also prints each chip's PCI vendor and device ID, or the following command:
 
 ```shell
 sensors
@@ -369,7 +369,7 @@ cargo build --release
 ### Dependencies
 
 - Rust 1.87.0 or later
-- Libraries: anyhow 1.0.100, rusb 0.9.4, sensors 0.2.2
+- Libraries: anyhow 1.0.100, rusb 0.9.4, sensors 0.2.2, libsensors-sys 0.2.0
 
 ## Contributing
 
