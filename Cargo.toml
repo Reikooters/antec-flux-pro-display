@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.100"
 sensors = "0.2.2"
+libsensors-sys = "0.2.0"
 rusb = "0.9.4"

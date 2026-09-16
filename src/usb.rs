@@ -19,8 +19,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use rusb::{DeviceHandle, Direction, GlobalContext, TransferType};
 
-pub const VENDOR_ID: u16 = 0x2022;
-pub const PRODUCT_ID: u16 = 0x0522;
+const VENDOR_ID: u16 = 0x2022;
+const PRODUCT_ID: u16 = 0x0522;
 
 const INTERFACE: u8 = 0;
 const FALLBACK_ENDPOINT: u8 = 0x03;
@@ -74,7 +74,7 @@ impl UsbDevice {
 
     /// Claim the interface, defensively detaching a kernel driver should one ever
     /// have bound to it.
-    pub fn claim(&self) -> Result<()> {
+    fn claim(&self) -> Result<()> {
         if self.handle.kernel_driver_active(INTERFACE).unwrap_or(false) {
             self.handle
                 .detach_kernel_driver(INTERFACE)

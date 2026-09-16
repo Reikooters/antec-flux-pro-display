@@ -369,7 +369,7 @@ cargo build --release
 ### Dependencies
 
 - Rust 1.87.0 or later
-- Libraries: anyhow 1.0.100, rusb 0.9.4, sensors 0.2.2
+- Libraries: anyhow 1.0.100, rusb 0.9.4, sensors 0.2.2, libsensors-sys 0.2.0
 
 ## Contributing
 

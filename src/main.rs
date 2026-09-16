@@ -6,13 +6,14 @@
 mod usb;
 
 use std::collections::HashMap;
+use std::ffi::CStr;
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use sensors::{Chip, FeatureType, Sensors, Subfeature};
 
 use usb::UsbDevice;
@@ -20,8 +21,10 @@ use usb::UsbDevice;
 const CONFIG_PATH: &str = "/etc/antec-flux-pro-display/config.conf";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// An update that overruns by this much is taken to mean the machine was suspended.
-const SUSPEND_SLACK: Duration = Duration::from_secs(2);
+/// How often to look for a sensor that is configured but currently missing.
+const RESCAN_INTERVAL: Duration = Duration::from_secs(10);
+/// How long to keep trying to reopen the display after it stops accepting frames.
+const RECONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Exit status for a configuration or usage error, which a restart will not fix.
 const EXIT_CONFIG: i32 = 2;
 const EXIT_USAGE: i32 = 2;
@@ -169,13 +172,38 @@ struct Match {
     input: Subfeature,
     /// `chip label`, e.g. `k10temp-pci-00c3 Tctl`, for logging.
     description: String,
+    /// The chip's hwmon directory and the driver name it held when bound. hwmon
+    /// numbers are reused, so a directory that exists but names another driver
+    /// means the chip is gone.
+    chip_path: PathBuf,
+    chip_name: String,
 }
 
-/// One position on the panel and the sensor bound to it.
+impl Match {
+    fn chip_present(&self) -> bool {
+        fs::read_to_string(self.chip_path.join("name"))
+            .map(|name| name.trim() == self.chip_name)
+            .unwrap_or(false)
+    }
+}
+
+/// What was last logged for a slot, so that a change in any part of it is logged
+/// exactly once.
+#[derive(PartialEq)]
+enum Logged {
+    Reading(String),
+    Unreadable(String),
+    Missing,
+}
+
+/// One position on the panel: its spec, the sensor bound to it, and the last state
+/// logged for it, so that changes are logged exactly once.
 struct Slot {
     name: &'static str,
     spec: SensorSpec,
     bound: Option<Match>,
+    /// `None` until the first read has been logged.
+    logged: Option<Logged>,
     warned_ambiguous: bool,
 }
 
@@ -185,6 +213,7 @@ impl Slot {
             name,
             spec,
             bound: None,
+            logged: None,
             warned_ambiguous: false,
         }
     }
@@ -213,16 +242,113 @@ impl Slot {
         } else {
             Some(matches.swap_remove(0))
         };
+    }
+
+    /// Whether a rescan could help: nothing is bound, or the bound chip is gone
+    /// (driver unloaded or renumbered). A chip that is present but momentarily
+    /// unreadable, such as a GPU in runtime suspend, is left alone.
+    fn stale(&self, value: Option<f64>) -> bool {
         match &self.bound {
-            Some(m) => println!(
-                "{} sensor {}: using {}",
-                self.name, self.spec, m.description
-            ),
-            None => eprintln!(
-                "{} sensor {} not found; showing dashes",
+            None => true,
+            Some(m) => value.is_none() && !m.chip_present(),
+        }
+    }
+
+    fn log_state(&mut self, value: Option<f64>) {
+        let state = match (&self.bound, value) {
+            (Some(m), Some(_)) => Logged::Reading(m.description.clone()),
+            (Some(m), None) => Logged::Unreadable(m.description.clone()),
+            (None, _) => Logged::Missing,
+        };
+        if self.logged.as_ref() == Some(&state) {
+            return;
+        }
+        match &state {
+            Logged::Reading(what) => println!("{} sensor {}: using {what}", self.name, self.spec),
+            Logged::Unreadable(what) => eprintln!(
+                "{} sensor {}: {what} is not readable; showing dashes",
                 self.name, self.spec
             ),
+            Logged::Missing => eprintln!(
+                "{} sensor {} not found; showing dashes and retrying every {} s",
+                self.name,
+                self.spec,
+                RESCAN_INTERVAL.as_secs()
+            ),
         }
+        self.logged = Some(state);
+    }
+}
+
+struct Monitor {
+    sensors: Sensors,
+    cpu: Slot,
+    gpu: Slot,
+    last_scan: Instant,
+    init_failure_logged: bool,
+}
+
+impl Monitor {
+    fn new(config: &Config) -> Self {
+        let mut monitor = Self {
+            sensors: Sensors::new(),
+            cpu: Slot::new("CPU", config.cpu.clone()),
+            gpu: Slot::new("GPU", config.gpu.clone()),
+            last_scan: Instant::now(),
+            init_failure_logged: false,
+        };
+        monitor.bind();
+        monitor
+    }
+
+    /// Re-read the sensor list and bind both slots.
+    ///
+    /// `Sensors::new()` initialises libsensors once per process and later calls are
+    /// no-ops, so a fresh `Sensors` would still see the chip list from start-up.
+    /// Tear libsensors down and initialise it again instead.
+    fn rescan(&mut self) {
+        // Drop every handle into libsensors' chip list before it is freed.
+        self.cpu.bound = None;
+        self.gpu.bound = None;
+        // SAFETY: no Chip, Feature or Subfeature from the previous initialisation is
+        // alive, and `Sensors` holds no pointer. If initialisation fails, libsensors
+        // leaves itself in the cleaned-up state, in which it reports no chips.
+        let status = unsafe {
+            libsensors_sys::sensors_cleanup();
+            libsensors_sys::sensors_init(std::ptr::null_mut())
+        };
+        if status != 0 && !self.init_failure_logged {
+            // SAFETY: sensors_strerror returns a static NUL-terminated string.
+            let reason = unsafe { CStr::from_ptr(libsensors_sys::sensors_strerror(status)) };
+            eprintln!(
+                "re-initialising libsensors failed: {}",
+                reason.to_string_lossy()
+            );
+            self.init_failure_logged = true;
+        }
+        self.bind();
+    }
+
+    fn bind(&mut self) {
+        self.cpu.bind(&self.sensors);
+        self.gpu.bind(&self.sensors);
+        self.last_scan = Instant::now();
+    }
+
+    /// Current readings. A slot that could benefit from a rescan gets one at most
+    /// every `RESCAN_INTERVAL`, so a driver that loads late or is reloaded is picked
+    /// up without a restart.
+    fn read(&mut self) -> (Option<f64>, Option<f64>) {
+        let (mut cpu, mut gpu) = (self.cpu.read(), self.gpu.read());
+        if (self.cpu.stale(cpu) || self.gpu.stale(gpu))
+            && self.last_scan.elapsed() >= RESCAN_INTERVAL
+        {
+            self.rescan();
+            (cpu, gpu) = (self.cpu.read(), self.gpu.read());
+        }
+        self.cpu.log_state(cpu);
+        self.gpu.log_state(gpu);
+        (cpu, gpu)
     }
 }
 
@@ -238,6 +364,8 @@ fn find_matches(sensors: &Sensors, spec: &SensorSpec) -> Vec<Match> {
         if spec.pinned_to_pci_id() && !matches_pci_id(&chip, &spec.vendor_id, &spec.device_id) {
             continue;
         }
+        let chip_path = chip.path().to_path_buf();
+        let chip_prefix = chip.prefix().to_owned();
         for feature in chip {
             if *feature.feature_type() != FeatureType::SENSORS_FEATURE_TEMP {
                 continue;
@@ -252,6 +380,8 @@ fn find_matches(sensors: &Sensors, spec: &SensorSpec) -> Vec<Match> {
                 matches.push(Match {
                     input,
                     description: format!("{chip_name} {label}"),
+                    chip_path: chip_path.clone(),
+                    chip_name: chip_prefix.clone(),
                 });
                 break;
             }
@@ -336,28 +466,54 @@ fn run() -> Result<()> {
         config.update_interval.as_millis()
     );
 
-    let display = UsbDevice::open()?;
-    let sensors = Sensors::new();
-    let mut cpu = Slot::new("CPU", config.cpu.clone());
-    let mut gpu = Slot::new("GPU", config.gpu.clone());
-    cpu.bind(&sensors);
-    gpu.bind(&sensors);
-    if cpu.bound.is_none() && gpu.bound.is_none() {
-        bail!("neither sensor was found; check the configuration against --list-sensors");
-    }
+    let mut display = Some(UsbDevice::open()?);
+    let mut lost_at: Option<Instant> = None;
+    let mut last_error = String::new();
+    let mut monitor = Monitor::new(&config);
 
     loop {
-        let started = Instant::now();
-        display.send(cpu.read(), gpu.read())?;
-        thread::sleep(config.update_interval);
+        let (cpu, gpu) = monitor.read();
 
-        if started.elapsed() > config.update_interval + SUSPEND_SLACK {
-            cpu.bind(&sensors);
-            gpu.bind(&sensors);
-            if let Err(err) = display.claim() {
-                eprintln!("{err:#}");
+        if display.is_none() {
+            // The previous handle was dropped when the write failed, so the interface
+            // is free to be claimed again once the device is back.
+            match UsbDevice::open() {
+                Ok(reopened) => {
+                    println!("display reopened");
+                    display = Some(reopened);
+                    lost_at = None;
+                }
+                Err(err) => {
+                    let lost = lost_at.get_or_insert_with(Instant::now);
+                    if lost.elapsed() >= RECONNECT_TIMEOUT {
+                        return Err(err.context(format!(
+                            "display still unavailable after {} s",
+                            RECONNECT_TIMEOUT.as_secs()
+                        )));
+                    }
+                    // Log each distinct failure once, not once per tick.
+                    let message = format!("{err:#}");
+                    if message != last_error {
+                        eprintln!("{message}; retrying");
+                        last_error = message;
+                    }
+                }
             }
         }
+
+        let failed = display.as_ref().and_then(|open| open.send(cpu, gpu).err());
+        if let Some(err) = failed {
+            eprintln!(
+                "{err:#}; reopening every {} ms for up to {} s",
+                config.update_interval.as_millis(),
+                RECONNECT_TIMEOUT.as_secs()
+            );
+            display = None;
+            lost_at = Some(Instant::now());
+            last_error.clear();
+        }
+
+        thread::sleep(config.update_interval);
     }
 }
 
