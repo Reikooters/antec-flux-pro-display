@@ -47,7 +47,9 @@ impl UsbDevice {
                     .map(|d| d.vendor_id() == VENDOR_ID && d.product_id() == PRODUCT_ID)
                     .unwrap_or(false)
             })
-            .with_context(|| format!("display {VENDOR_ID:04x}:{PRODUCT_ID:04x} is not connected"))?;
+            .with_context(|| {
+                format!("display {VENDOR_ID:04x}:{PRODUCT_ID:04x} is not connected")
+            })?;
         let handle = device
             .open()
             .with_context(|| format!("opening display {VENDOR_ID:04x}:{PRODUCT_ID:04x}"))?;

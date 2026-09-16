@@ -1,336 +1,35 @@
+//! Shows CPU and GPU temperatures on the side-panel display of an Antec Flux Pro case.
+//!
+//! Temperatures come from libsensors, so any device with a hwmon driver can be shown.
+//! Which sensors to use is configured in `/etc/antec-flux-pro-display/config.conf`.
+
 mod usb;
 
-use std::error::Error;
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::collections::HashMap;
-use std::io;
+use std::fmt;
+use std::fs;
+use std::path::Path;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use sensors::{Chip, Subfeature, Sensors};
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, bail};
+use sensors::{Chip, FeatureType, Sensors, Subfeature};
+
 use usb::UsbDevice;
 
-#[derive(Debug)]
-struct AppConfig {
-    cpu_device: String,
-    cpu_temp_type: String,
-    cpu_vendor_id: String,
-    cpu_device_id: String,
-    gpu_device: String,
-    gpu_temp_type: String,
-    gpu_vendor_id: String,
-    gpu_device_id: String,
-    update_interval: u64,
-}
-
-enum DeviceType {
-    Cpu,
-    Gpu,
-}
-
-impl AppConfig {
-    fn new() -> io::Result<Self> {
-        let config_dir = PathBuf::from("/etc/antec-flux-pro-display");
-        let config_path = config_dir.join("config.conf");
-
-        if !config_path.exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "Configuration file /etc/antec-flux-pro-display/config.conf not found"
-            ));
-        }
-
-        let config_str = fs::read_to_string(config_path)?;
-        let mut config_map = HashMap::new();
-
-        for line in config_str.lines() {
-            // Skip empty lines and comments
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            if let Some((key, value)) = line.split_once('=') {
-                config_map.insert(key.trim().to_string(), value.trim().to_string());
-            }
-        }
-
-        // Get required values or return error if not found
-
-        // Required CPU values
-        let cpu_device = config_map.get("cpu_device")
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cpu_device not found in config"))?
-            .clone()
-            .to_lowercase();
-
-        let cpu_temp_type = config_map.get("cpu_temp_type")
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cpu_temp_type not found in config"))?
-            .clone()
-            .to_lowercase();
-
-        // Optional CPU values (default to empty string if not found)
-        let cpu_vendor_id = config_map.get("cpu_vendor_id").cloned().unwrap_or_default().trim_start_matches("0x").trim().to_lowercase();
-        let cpu_device_id = config_map.get("cpu_device_id").cloned().unwrap_or_default().trim_start_matches("0x").trim().to_lowercase();
-
-        // Required GPU values
-        let gpu_device = config_map.get("gpu_device")
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "gpu_device not found in config"))?
-            .clone()
-            .to_lowercase();
-
-        let gpu_temp_type = config_map.get("gpu_temp_type")
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "gpu_temp_type not found in config"))?
-            .clone()
-            .to_lowercase();
-
-        // Optional GPU values (default to empty string if not found)
-        let gpu_vendor_id = config_map.get("gpu_vendor_id").cloned().unwrap_or_default().trim_start_matches("0x").trim().to_lowercase();
-        let gpu_device_id = config_map.get("gpu_device_id").cloned().unwrap_or_default().trim_start_matches("0x").trim().to_lowercase();
-
-        // Update interval is optional, default to 1000ms if not found
-        let update_interval = config_map.get("update_interval")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1000);
-
-        Ok(AppConfig {
-            cpu_device,
-            cpu_temp_type,
-            cpu_vendor_id,
-            cpu_device_id,
-            gpu_device,
-            gpu_temp_type,
-            gpu_vendor_id,
-            gpu_device_id,
-            update_interval,
-        })
-    }
-
-    fn format_device_info(&self, device_type: DeviceType) -> String {
-        let (name, temp_type, vendor, device) = match device_type {
-            DeviceType::Cpu => (&self.cpu_device, &self.cpu_temp_type, &self.cpu_vendor_id, &self.cpu_device_id),
-            DeviceType::Gpu => (&self.gpu_device, &self.gpu_temp_type, &self.gpu_vendor_id, &self.gpu_device_id),
-        };
-
-        let mut out = format!("{} (type: {})", name, temp_type);
-        if !vendor.is_empty() || !device.is_empty() {
-            out.push_str(&format!(" [ID: {}:{}]",
-                                  if vendor.is_empty() { "*" } else { vendor },
-                                  if device.is_empty() { "*" } else { device }
-            ));
-        }
-        out
-    }
-}
-
-fn get_time_string() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    format!("{:02}:{:02}:{:02}",
-            (secs / 3600) % 24,
-            (secs / 60) % 60,
-            secs % 60)
-}
-
-// Helper function to find sensors
-fn discover_features(sensors: &Sensors, config: &AppConfig) -> (Option<Subfeature>, Option<Subfeature>) {
-    let mut cpu: Option<Subfeature> = None;
-    let mut gpu: Option<Subfeature> = None;
-
-    for chip in sensors.clone().into_iter() {
-        let chip_name = chip.get_name().unwrap_or_default().to_lowercase();
-
-        // CPU PCI Vendor/Device check
-        let cpu_v_empty = config.cpu_vendor_id.is_empty();
-        let cpu_d_empty = config.cpu_device_id.is_empty();
-
-        let is_cpu_pci = if cpu_v_empty && cpu_d_empty {
-            true // Default to true if both are empty
-        } else {
-            matches_pci_id(&chip, &config.cpu_vendor_id, &config.cpu_device_id)
-        };
-
-        // GPU PCI Vendor/Device check
-        let gpu_v_empty = config.gpu_vendor_id.is_empty();
-        let gpu_d_empty = config.gpu_device_id.is_empty();
-
-        let is_gpu_pci = if gpu_v_empty && gpu_d_empty {
-            true // Default to true if both are empty
-        } else {
-            matches_pci_id(&chip, &config.gpu_vendor_id, &config.gpu_device_id)
-        };
-
-        for feature in chip {
-            if let Ok(label) = feature.get_label() {
-                let label_lower = label.to_lowercase();
-
-                let is_cpu = (chip_name.starts_with(&config.cpu_device) || label_lower.starts_with(&config.cpu_device))
-                    && label_lower.starts_with(&config.cpu_temp_type)
-                    && is_cpu_pci;
-
-                let is_gpu = (chip_name.starts_with(&config.gpu_device) || label_lower.starts_with(&config.gpu_device))
-                    && label_lower.starts_with(&config.gpu_temp_type)
-                    && is_gpu_pci;
-
-                if is_cpu || is_gpu {
-                    for subfeature in feature {
-                        if subfeature.name().contains("input") {
-                            if is_cpu {
-                                cpu = Some(subfeature);
-                            } else if is_gpu {
-                                gpu = Some(subfeature);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if cpu.is_none() {
-        if config.cpu_device.is_empty() {
-            eprintln!(
-                "Error: CPU device matching '{}' with type '{}' not found!",
-                config.cpu_device, config.cpu_temp_type
-            );
-        }
-        else {
-            eprintln!(
-                "Error: CPU device matching '{}', vendor_id '{}', device_id '{}' with type '{}' not found!",
-                config.cpu_device, config.cpu_vendor_id, config.cpu_device_id, config.cpu_temp_type
-            );
-        }
-    }
-    if gpu.is_none() {
-        if config.gpu_device.is_empty() {
-            eprintln!(
-                "Error: GPU device matching '{}' with type '{}' not found!",
-                config.gpu_device, config.gpu_temp_type
-            );
-        }
-        else {
-            eprintln!(
-                "Error: GPU device matching '{}', vendor_id '{}', device_id '{}' with type '{}' not found!",
-                config.gpu_device, config.gpu_vendor_id, config.gpu_device_id, config.gpu_temp_type
-            );
-        }
-    }
-
-    (cpu, gpu)
-}
-
-fn matches_pci_id(chip: &Chip, expected_vendor: &str, expected_device: &str) -> bool {
-    let chip_name = chip.get_name().unwrap_or_default();
-
-    // Extract the hex part from names like "amdgpu-pci-0300"
-    // The last part '0300' represents Bus (03) and Device/Function (00)
-    let hex_addr = match chip_name.split('-').last() {
-        Some(h) if h.len() >= 4 => h,
-        _ => return false,
-    };
-
-    // Iterate through /sys/bus/pci/devices to find a match
-    if let Ok(entries) = fs::read_dir("/sys/bus/pci/devices/") {
-        for entry in entries.flatten() {
-            let pci_id = entry.file_name().into_string().unwrap_or_default();
-
-            // Convert DBDF (0000:03:00.0) to libsensors format (0300)
-            // 0000 : [Bus] : [Device].[Function]
-            let parts: Vec<&str> = pci_id.split(|c| c == ':' || c == '.').collect();
-            if parts.len() >= 4 {
-                let bus = parts[1]; // "03"
-                let dev = parts[2]; // "00"
-                let func = parts[3]; // "0"
-
-                // libsensors "0300" = Bus(03) + Device(00) + Function(0)
-                let reconstructed = format!("{}{}{}", bus, dev, func);
-
-                // Compare against the chip's internal address (e.g., "0300")
-                if reconstructed.starts_with(hex_addr) {
-                    let path = entry.path();
-                    let vendor = fs::read_to_string(path.join("vendor")).unwrap_or_default();
-                    let device = fs::read_to_string(path.join("device")).unwrap_or_default();
-
-                    let clean_v = expected_vendor.to_lowercase();
-                    let clean_d = expected_device.to_lowercase();
-
-                    if vendor.trim().contains(&clean_v) && device.trim().contains(&clean_d) {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
+const CONFIG_PATH: &str = "/etc/antec-flux-pro-display/config.conf";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-fn main() -> Result<(), Box<dyn Error>> {
-    // If --version argument is passed, print version and exit
-    let args: Vec<String> = std::env::args().collect();
-    if args.contains(&"--version".to_string()) {
-        println!("antec-flux-pro-display {}", VERSION);
-        return Ok(());
-    }
+/// An update that overruns by this much is taken to mean the machine was suspended.
+const SUSPEND_SLACK: Duration = Duration::from_secs(2);
+/// Exit status for a configuration or usage error, which a restart will not fix.
+const EXIT_CONFIG: i32 = 2;
+const EXIT_USAGE: i32 = 2;
+const MIN_UPDATE_INTERVAL: Duration = Duration::from_millis(100);
+const DEFAULT_UPDATE_INTERVAL: Duration = Duration::from_millis(1000);
 
-    // Initialize sensors first
-    let mut sensors = Sensors::new();
-
-    // Print available sensors
-    println!("Available temperature sensors:");
-    println!("-----------------------------");
-
-    // List all available chips and their features
-    for chip in sensors {
-        println!("Chip: {}", chip.get_name()?);
-
-        let hwmon_path = chip.path();
-        println!("  Path: {}", hwmon_path.display());
-
-        // Get the device path (e.g., /sys/class/hwmon/hwmon1/device)
-        let device_path = hwmon_path.join("device");
-
-        // Read vendor and device IDs (stored as hex strings like "0x1002\n")
-        let vendor_hex = fs::read_to_string(device_path.join("vendor")).unwrap_or_default();
-        let device_hex = fs::read_to_string(device_path.join("device")).unwrap_or_default();
-        let vendor_trimmed = vendor_hex.trim_start_matches("0x").trim();
-        let device_trimmed = device_hex.trim_start_matches("0x").trim();
-
-        if !vendor_trimmed.is_empty() {
-            println!("  VendorId: {}", vendor_trimmed);
-        }
-
-        if !device_trimmed.is_empty() {
-            println!("  DeviceId: {}", device_trimmed);
-        }
-
-        println!("  Temperatures:");
-        for feature in chip {
-            if let Some(label) = feature.get_label().ok() {
-                if *feature.feature_type() == sensors::FeatureType::SENSORS_FEATURE_TEMP {
-                    if let Some(input) = feature.into_iter().find(|sf| sf.name().contains("input")) {
-                        if let Ok(temp) = input.get_value() {
-                            println!("    {}: {:.1}°C", label, temp);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    println!("-----------------------------\n");
-
-    // Load configuration
-    let config = match AppConfig::new() {
-        Ok(config) => config,
-        Err(e) => {
-            eprintln!("Error loading configuration: {}", e);
-
-            if !Path::new("/etc/antec-flux-pro-display/config.conf").exists() {
-                // Sample configuration template
-                const SAMPLE_CONFIG: &str = r#"# CPU device for temperature monitoring
+const SAMPLE_CONFIG: &str = "\
+# CPU device for temperature monitoring
 cpu_device=k10temp
 cpu_temp_type=tctl
 
@@ -339,110 +38,397 @@ gpu_device=amdgpu
 gpu_temp_type=edge
 
 # Update interval in milliseconds
-update_interval=1000"#;
+update_interval=1000";
 
-                eprintln!("\nConfiguration file is missing. Please create the following file:");
-                eprintln!("/etc/antec-flux-pro-display/config.conf");
-                eprintln!("\nUUse this sample configuration as a template and adjust according to your available sensors above:");
-                eprintln!("-----------------------------");
-                eprintln!("{}", SAMPLE_CONFIG);
-                eprintln!("-----------------------------");
-                eprintln!("\nMake sure to adjust the values according to your system's available sensors shown above.");
+const USAGE: &str = "\
+usage: antec-flux-pro-display [--list-sensors | --version | --help]
+
+Runs until stopped, sending the configured CPU and GPU temperatures to the
+Antec Flux Pro case display once per update interval.
+
+  --list-sensors  print every temperature sensor libsensors can see, and exit
+  -V, --version   print the version, and exit
+  -h, --help      print this help, and exit";
+
+/// Which libsensors reading to show in one position on the panel.
+#[derive(Debug, Clone)]
+struct SensorSpec {
+    /// Chip name prefix, e.g. `k10temp` or `amdgpu`; compared lower-case.
+    device: String,
+    /// Feature label prefix, e.g. `tctl` or `edge`; compared lower-case.
+    temp_type: String,
+    /// Optional PCI vendor and device ID (hex) to tell apart chips that share a name.
+    vendor_id: String,
+    device_id: String,
+}
+
+impl SensorSpec {
+    fn from_config(config: &HashMap<String, String>, prefix: &str) -> Result<Self> {
+        let required = |key: &str| -> Result<String> {
+            config
+                .get(&format!("{prefix}_{key}"))
+                .map(|v| v.to_lowercase())
+                .with_context(|| format!("{prefix}_{key} is not set in {CONFIG_PATH}"))
+        };
+        let optional_id = |key: &str| -> String {
+            config
+                .get(&format!("{prefix}_{key}"))
+                .map(|v| normalize_hex_id(&v.to_lowercase()).to_owned())
+                .unwrap_or_default()
+        };
+        Ok(Self {
+            device: required("device")?,
+            temp_type: required("temp_type")?,
+            vendor_id: optional_id("vendor_id"),
+            device_id: optional_id("device_id"),
+        })
+    }
+
+    fn pinned_to_pci_id(&self) -> bool {
+        !self.vendor_id.is_empty() || !self.device_id.is_empty()
+    }
+}
+
+impl fmt::Display for SensorSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.device, self.temp_type)?;
+        if self.pinned_to_pci_id() {
+            fn or_any(id: &str) -> &str {
+                if id.is_empty() { "*" } else { id }
             }
+            write!(
+                f,
+                " [{}:{}]",
+                or_any(&self.vendor_id),
+                or_any(&self.device_id)
+            )?;
+        }
+        Ok(())
+    }
+}
 
-            std::process::exit(1);
+/// `0x1002` and `1002` both become `1002` (callers lower-case first, so `0X` works
+/// too); leading zeros are dropped so that `0522` and `522` compare equal. An ID
+/// that is all zeros becomes empty, which matches anything.
+fn normalize_hex_id(id: &str) -> &str {
+    let id = id.trim();
+    let id = id.strip_prefix("0x").unwrap_or(id);
+    id.trim_start_matches('0')
+}
+
+#[derive(Debug)]
+struct Config {
+    cpu: SensorSpec,
+    gpu: SensorSpec,
+    update_interval: Duration,
+}
+
+impl Config {
+    fn load() -> Result<Self> {
+        let text =
+            fs::read_to_string(CONFIG_PATH).with_context(|| format!("reading {CONFIG_PATH}"))?;
+        Self::parse(&text)
+    }
+
+    fn parse(text: &str) -> Result<Self> {
+        let map: HashMap<String, String> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .filter_map(|line| line.split_once('='))
+            .map(|(key, value)| (key.trim().to_owned(), value.trim().to_owned()))
+            .collect();
+
+        let update_interval = match map.get("update_interval") {
+            None => DEFAULT_UPDATE_INTERVAL,
+            Some(value) => {
+                let millis: u64 = value.parse().with_context(|| {
+                    format!("update_interval={value:?} is not a number of milliseconds")
+                })?;
+                let requested = Duration::from_millis(millis);
+                if requested < MIN_UPDATE_INTERVAL {
+                    eprintln!(
+                        "update_interval={millis} is below the minimum; using {} ms",
+                        MIN_UPDATE_INTERVAL.as_millis()
+                    );
+                }
+                requested.max(MIN_UPDATE_INTERVAL)
+            }
+        };
+
+        Ok(Self {
+            cpu: SensorSpec::from_config(&map, "cpu")?,
+            gpu: SensorSpec::from_config(&map, "gpu")?,
+            update_interval,
+        })
+    }
+}
+
+/// A temperature reading that matched a `SensorSpec`.
+struct Match {
+    input: Subfeature,
+    /// `chip label`, e.g. `k10temp-pci-00c3 Tctl`, for logging.
+    description: String,
+}
+
+/// One position on the panel and the sensor bound to it.
+struct Slot {
+    name: &'static str,
+    spec: SensorSpec,
+    bound: Option<Match>,
+    warned_ambiguous: bool,
+}
+
+impl Slot {
+    fn new(name: &'static str, spec: SensorSpec) -> Self {
+        Self {
+            name,
+            spec,
+            bound: None,
+            warned_ambiguous: false,
+        }
+    }
+
+    fn read(&self) -> Option<f64> {
+        self.bound.as_ref().and_then(|m| m.input.get_value().ok())
+    }
+
+    fn bind(&mut self, sensors: &Sensors) {
+        let mut matches = find_matches(sensors, &self.spec);
+        if matches.len() > 1 && !self.spec.pinned_to_pci_id() && !self.warned_ambiguous {
+            let candidates: Vec<&str> = matches.iter().map(|m| m.description.as_str()).collect();
+            eprintln!(
+                "{} sensor {} matches more than one chip ({}); using the first. \
+                 Pin one with {}_vendor_id and {}_device_id.",
+                self.name,
+                self.spec,
+                candidates.join(", "),
+                self.name.to_lowercase(),
+                self.name.to_lowercase()
+            );
+            self.warned_ambiguous = true;
+        }
+        self.bound = if matches.is_empty() {
+            None
+        } else {
+            Some(matches.swap_remove(0))
+        };
+        match &self.bound {
+            Some(m) => println!(
+                "{} sensor {}: using {}",
+                self.name, self.spec, m.description
+            ),
+            None => eprintln!(
+                "{} sensor {} not found; showing dashes",
+                self.name, self.spec
+            ),
+        }
+    }
+}
+
+/// For each chip matching `spec`, in libsensors order, the `_input` subfeature of
+/// its first temperature whose label matches.
+fn find_matches(sensors: &Sensors, spec: &SensorSpec) -> Vec<Match> {
+    let mut matches = Vec::new();
+    for chip in sensors.into_iter() {
+        let chip_name = chip.get_name().unwrap_or_default();
+        if !chip_name.to_lowercase().starts_with(&spec.device) {
+            continue;
+        }
+        if spec.pinned_to_pci_id() && !matches_pci_id(&chip, &spec.vendor_id, &spec.device_id) {
+            continue;
+        }
+        for feature in chip {
+            if *feature.feature_type() != FeatureType::SENSORS_FEATURE_TEMP {
+                continue;
+            }
+            let Ok(label) = feature.get_label() else {
+                continue;
+            };
+            if !label.to_lowercase().starts_with(&spec.temp_type) {
+                continue;
+            }
+            if let Some(input) = feature.into_iter().find(|sf| sf.name().ends_with("_input")) {
+                matches.push(Match {
+                    input,
+                    description: format!("{chip_name} {label}"),
+                });
+                break;
+            }
+        }
+    }
+    matches
+}
+
+/// Whether the PCI device behind a libsensors chip has the given vendor and device
+/// ID. An empty ID matches anything.
+fn matches_pci_id(chip: &Chip, vendor_id: &str, device_id: &str) -> bool {
+    let (Some(vendor), Some(device)) = pci_id(chip) else {
+        return false;
+    };
+    (vendor_id.is_empty() || vendor == vendor_id) && (device_id.is_empty() || device == device_id)
+}
+
+/// The PCI vendor and device ID of the device behind a chip's hwmon directory,
+/// normalised like the config values. `<hwmon>/device` is the PCI function for
+/// most drivers; for class devices such as NVMe it is one level further up.
+fn pci_id(chip: &Chip) -> (Option<String>, Option<String>) {
+    let device = chip.path().join("device");
+    for dir in [device.clone(), device.join("device")] {
+        let read = |file: &str| {
+            fs::read_to_string(dir.join(file))
+                .ok()
+                .map(|s| normalize_hex_id(&s.to_lowercase()).to_owned())
+        };
+        if let (Some(vendor), Some(device)) = (read("vendor"), read("device")) {
+            return (Some(vendor), Some(device));
+        }
+    }
+    (None, None)
+}
+
+fn list_sensors() {
+    for chip in Sensors::new().into_iter() {
+        let name = chip.get_name().unwrap_or_else(|_| "?".into());
+        let id = match pci_id(&chip) {
+            (Some(vendor), Some(device)) => format!("  [{vendor}:{device}]"),
+            _ => String::new(),
+        };
+        println!("{name}{id}  ({})", chip.path().display());
+        for feature in chip {
+            if *feature.feature_type() != FeatureType::SENSORS_FEATURE_TEMP {
+                continue;
+            }
+            let label = feature
+                .get_label()
+                .unwrap_or_else(|_| feature.name().to_owned());
+            let value = feature
+                .into_iter()
+                .find(|sf| sf.name().ends_with("_input"))
+                .and_then(|sf| sf.get_value().ok());
+            match value {
+                Some(v) => println!("    {label}: {v:.1} °C"),
+                None => println!("    {label}: unreadable"),
+            }
+        }
+    }
+}
+
+fn run() -> Result<()> {
+    let config = match Config::load() {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            if !Path::new(CONFIG_PATH).exists() {
+                eprintln!(
+                    "Create it from this template, using names from\n\
+                     `antec-flux-pro-display --list-sensors` or `sensors`:\n\n{SAMPLE_CONFIG}\n"
+                );
+            }
+            std::process::exit(EXIT_CONFIG);
         }
     };
 
-    // Print initial information
-    println!("Starting temperature monitor...");
-    println!("CPU device: {}", config.format_device_info(DeviceType::Cpu));
-    println!("GPU device: {}", config.format_device_info(DeviceType::Gpu));
-    println!("Update interval: {}ms\n", config.update_interval);
+    println!(
+        "antec-flux-pro-display {VERSION}: CPU {}, GPU {}, every {} ms",
+        config.cpu,
+        config.gpu,
+        config.update_interval.as_millis()
+    );
 
-    let device = UsbDevice::open()?;
-
-    let (mut cpu_feature, mut gpu_feature) = discover_features(&sensors, &config);
-
-    if cpu_feature.is_none() && gpu_feature.is_none() {
-        println!("Both CPU and GPU devices were not found. Please check your config or run 'sensors' in terminal to see available names. Program exiting.");
-        std::process::exit(1);
+    let display = UsbDevice::open()?;
+    let sensors = Sensors::new();
+    let mut cpu = Slot::new("CPU", config.cpu.clone());
+    let mut gpu = Slot::new("GPU", config.gpu.clone());
+    cpu.bind(&sensors);
+    gpu.bind(&sensors);
+    if cpu.bound.is_none() && gpu.bound.is_none() {
+        bail!("neither sensor was found; check the configuration against --list-sensors");
     }
 
     loop {
-        let start_time = Instant::now();
+        let started = Instant::now();
+        display.send(cpu.read(), gpu.read())?;
+        thread::sleep(config.update_interval);
 
-        // Attempt to read temperatures
-        let cpu_temp = cpu_feature.as_ref().and_then(|f| f.get_value().ok());
-        let gpu_temp = gpu_feature.as_ref().and_then(|f| f.get_value().ok());
-
-        // Handle missing sensors (e.g., driver unloaded/reloaded during sleep)
-        if cpu_temp.is_none() && gpu_temp.is_none() {
-            #[cfg(debug_assertions)]
-            eprintln!("[{}] Sensors lost. Attempting re-discovery...",
-                      get_time_string());
-
-            sensors = Sensors::new(); // Refresh libsensors internal state
-            let (c, g) = discover_features(&sensors, &config);
-            cpu_feature = c;
-            gpu_feature = g;
-
-            if let Err(err) = device.claim() {
+        if started.elapsed() > config.update_interval + SUSPEND_SLACK {
+            cpu.bind(&sensors);
+            gpu.bind(&sensors);
+            if let Err(err) = display.claim() {
                 eprintln!("{err:#}");
             }
         }
+    }
+}
 
-        match (cpu_temp, gpu_temp) {
-            (Some(_cpu), Some(_gpu)) => {
-                #[cfg(debug_assertions)]
-                println!("[{}] CPU: {:.1}°C  |  GPU: {:.1}°C",
-                         get_time_string(), _cpu, _gpu);
-            },
-            (Some(_cpu), None) => {
-                #[cfg(debug_assertions)]
-                println!("[{}] CPU: {:.1}°C  |  GPU device {} not found!",
-                         get_time_string(), _cpu, config.format_device_info(DeviceType::Gpu));
-                #[cfg(not(debug_assertions))]
-                eprintln!("[{}] GPU device {} not found!",
-                          get_time_string(), config.format_device_info(DeviceType::Gpu));
-            },
-            (None, Some(_gpu)) => {
-                #[cfg(debug_assertions)]
-                println!("[{}] CPU device {} not found!  |  GPU: {:.1}°C",
-                         get_time_string(), config.format_device_info(DeviceType::Cpu), _gpu);
-                #[cfg(not(debug_assertions))]
-                eprintln!("[{}] CPU device {} not found!",
-                          get_time_string(), config.format_device_info(DeviceType::Cpu));
-            },
-            (None, None) => {
-                eprintln!("[{}] CPU device {} not found!  |  GPU device {} not found!",
-                          get_time_string(), config.format_device_info(DeviceType::Cpu), config.format_device_info(DeviceType::Gpu));
-            }
+fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [] => run(),
+        ["--list-sensors"] => {
+            list_sensors();
+            Ok(())
         }
-
-        if let Err(err) = device.send(cpu_temp, gpu_temp) {
-            eprintln!("{err:#}");
-            std::process::exit(1);
+        ["--version" | "-V"] => {
+            println!("antec-flux-pro-display {VERSION}");
+            Ok(())
         }
-
-        // Sleep and Detect Wake-up
-        let interval = Duration::from_millis(config.update_interval);
-        thread::sleep(interval);
-
-        // If we slept for much longer than intended, assume the PC was suspended
-        if start_time.elapsed() > interval + Duration::from_secs(2) {
-            #[cfg(debug_assertions)]
-            println!("[{}] Wake-up detected. Refreshing hardware handles...",
-                     get_time_string());
-
-            sensors = Sensors::new();
-            let (c, g) = discover_features(&sensors, &config);
-            cpu_feature = c;
-            gpu_feature = g;
-
-            if let Err(err) = device.claim() {
-                eprintln!("{err:#}");
-            }
+        ["--help" | "-h"] => {
+            println!("{USAGE}");
+            Ok(())
         }
+        other => {
+            eprintln!("unexpected arguments: {}\n{USAGE}", other.join(" "));
+            std::process::exit(EXIT_USAGE);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_ids_are_normalised() {
+        assert_eq!(normalize_hex_id("0x1002"), "1002");
+        assert_eq!(normalize_hex_id("1002"), "1002");
+        assert_eq!(normalize_hex_id(" 0522 "), "522");
+        assert_eq!(normalize_hex_id("0000"), "");
+    }
+
+    #[test]
+    fn config_parses_upstream_format() {
+        let config = Config::parse(
+            "# comment\ncpu_device=K10Temp\ncpu_temp_type = Tctl\n\ngpu_device=amdgpu\n\
+             gpu_temp_type=edge\ngpu_vendor_id=0X1002\ngpu_device_id=7550\n",
+        )
+        .unwrap();
+        assert_eq!(config.cpu.device, "k10temp");
+        assert_eq!(config.cpu.temp_type, "tctl");
+        assert!(!config.cpu.pinned_to_pci_id());
+        assert_eq!(config.gpu.vendor_id, "1002");
+        assert_eq!(config.gpu.device_id, "7550");
+        assert_eq!(config.update_interval, DEFAULT_UPDATE_INTERVAL);
+    }
+
+    #[test]
+    fn config_requires_both_sensors() {
+        let err = Config::parse("cpu_device=k10temp\ncpu_temp_type=tctl\n").unwrap_err();
+        assert!(err.to_string().contains("gpu_device"));
+    }
+
+    #[test]
+    fn update_interval_is_validated() {
+        let base = "cpu_device=a\ncpu_temp_type=b\ngpu_device=c\ngpu_temp_type=d\n";
+        assert!(Config::parse(&format!("{base}update_interval=abc\n")).is_err());
+        let fast = Config::parse(&format!("{base}update_interval=50\n")).unwrap();
+        assert_eq!(fast.update_interval, MIN_UPDATE_INTERVAL);
+        let slow = Config::parse(&format!("{base}update_interval=2500\n")).unwrap();
+        assert_eq!(slow.update_interval, Duration::from_millis(2500));
     }
 }
