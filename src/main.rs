@@ -360,10 +360,7 @@ update_interval=1000"#;
     println!("GPU device: {}", config.format_device_info(DeviceType::Gpu));
     println!("Update interval: {}ms\n", config.update_interval);
 
-    let device = UsbDevice::open(usb::VENDOR_ID, usb::PRODUCT_ID)?;
-
-    // Need to claim the interface to continue.
-    device.claim_interface();
+    let device = UsbDevice::open()?;
 
     let (mut cpu_feature, mut gpu_feature) = discover_features(&sensors, &config);
 
@@ -390,7 +387,9 @@ update_interval=1000"#;
             cpu_feature = c;
             gpu_feature = g;
 
-            device.claim_interface();
+            if let Err(err) = device.claim() {
+                eprintln!("{err:#}");
+            }
         }
 
         match (cpu_temp, gpu_temp) {
@@ -421,7 +420,10 @@ update_interval=1000"#;
             }
         }
 
-        device.send_payload(&cpu_temp, &gpu_temp);
+        if let Err(err) = device.send(cpu_temp, gpu_temp) {
+            eprintln!("{err:#}");
+            std::process::exit(1);
+        }
 
         // Sleep and Detect Wake-up
         let interval = Duration::from_millis(config.update_interval);
@@ -438,7 +440,9 @@ update_interval=1000"#;
             cpu_feature = c;
             gpu_feature = g;
 
-            device.claim_interface();
+            if let Err(err) = device.claim() {
+                eprintln!("{err:#}");
+            }
         }
     }
 }
