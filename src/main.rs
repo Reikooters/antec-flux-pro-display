@@ -9,6 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sensors::{Chip, Subfeature, Sensors};
 use usb::UsbDevice;
+use nvml_wrapper::Nvml;
+use nvml_wrapper::enum_wrappers::device::TemperatureSensor;
 
 #[derive(Debug)]
 struct AppConfig {
@@ -20,6 +22,7 @@ struct AppConfig {
     gpu_temp_type: String,
     gpu_vendor_id: String,
     gpu_device_id: String,
+    gpu_nvml_index: u32,
     update_interval: u64,
 }
 
@@ -92,6 +95,11 @@ impl AppConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1000);
 
+        // NVIDIA GPU index for NVML (gpu_device=nvidia), default 0
+        let gpu_nvml_index = config_map.get("gpu_nvml_index")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
         Ok(AppConfig {
             cpu_device,
             cpu_temp_type,
@@ -101,8 +109,15 @@ impl AppConfig {
             gpu_temp_type,
             gpu_vendor_id,
             gpu_device_id,
+            gpu_nvml_index,
             update_interval,
         })
+    }
+
+    // The proprietary NVIDIA driver exposes no hwmon sensors, so the GPU
+    // temperature is read through NVML (libnvidia-ml.so) instead.
+    fn gpu_uses_nvml(&self) -> bool {
+        self.gpu_device == "nvidia" || self.gpu_device == "nvml"
     }
 
     fn format_device_info(&self, device_type: DeviceType) -> String {
@@ -169,7 +184,8 @@ fn discover_features(sensors: &Sensors, config: &AppConfig) -> (Option<Subfeatur
                     && label_lower.starts_with(&config.cpu_temp_type)
                     && is_cpu_pci;
 
-                let is_gpu = (chip_name.starts_with(&config.gpu_device) || label_lower.starts_with(&config.gpu_device))
+                let is_gpu = !config.gpu_uses_nvml()
+                    && (chip_name.starts_with(&config.gpu_device) || label_lower.starts_with(&config.gpu_device))
                     && label_lower.starts_with(&config.gpu_temp_type)
                     && is_gpu_pci;
 
@@ -202,7 +218,7 @@ fn discover_features(sensors: &Sensors, config: &AppConfig) -> (Option<Subfeatur
             );
         }
     }
-    if gpu.is_none() {
+    if gpu.is_none() && !config.gpu_uses_nvml() {
         if config.gpu_device.is_empty() {
             eprintln!(
                 "Error: GPU device matching '{}' with type '{}' not found!",
@@ -367,7 +383,28 @@ update_interval=1000"#;
 
     let (mut cpu_feature, mut gpu_feature) = discover_features(&sensors, &config);
 
-    if cpu_feature.is_none() && gpu_feature.is_none() {
+    let nvml = if config.gpu_uses_nvml() {
+        match Nvml::init() {
+            Ok(n) => {
+                println!("GPU source: NVML, device index {}", config.gpu_nvml_index);
+                Some(n)
+            }
+            Err(e) => {
+                eprintln!("Error: failed to initialise NVML: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let read_nvml = |n: &Nvml| -> Option<f64> {
+        n.device_by_index(config.gpu_nvml_index).ok()?
+            .temperature(TemperatureSensor::Gpu).ok()
+            .map(|t| t as f64)
+    };
+
+    if cpu_feature.is_none() && gpu_feature.is_none() && nvml.is_none() {
         println!("Both CPU and GPU devices were not found. Please check your config or run 'sensors' in terminal to see available names. Program exiting.");
         std::process::exit(1);
     }
@@ -377,7 +414,10 @@ update_interval=1000"#;
 
         // Attempt to read temperatures
         let cpu_temp = cpu_feature.as_ref().and_then(|f| f.get_value().ok());
-        let gpu_temp = gpu_feature.as_ref().and_then(|f| f.get_value().ok());
+        let gpu_temp = match &nvml {
+            Some(n) => read_nvml(n),
+            None => gpu_feature.as_ref().and_then(|f| f.get_value().ok()),
+        };
 
         // Handle missing sensors (e.g., driver unloaded/reloaded during sleep)
         if cpu_temp.is_none() && gpu_temp.is_none() {
