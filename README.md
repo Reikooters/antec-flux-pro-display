@@ -329,11 +329,25 @@ The configuration file `/etc/antec-flux-pro-display/config.conf` supports the fo
 | cpu_temp_type | CPU temperature sensor label | `tctl` |
 | cpu_vendor_id | **Optional**, use it in addition to the name if you have two devices with the same name | `1022` |
 | cpu_device_id | **Optional**, use it in addition to the name if you have two devices with the same name | `14e3` |
-| gpu_device | GPU temperature device name | `amdgpu` |
+| gpu_device | GPU temperature device name, or `nvidia` / `nvml` to read the temperature through NVML (see below) | `amdgpu` |
 | gpu_temp_type | GPU temperature sensor label | `edge` |
 | gpu_vendor_id | **Optional**, use it in addition to the name if you have two devices with the same name | `1002` |
 | gpu_device_id | **Optional**, use it in addition to the name if you have two devices with the same name | `7550` |
 | update_interval | Update frequency in milliseconds | `1000` |
+| gpu_nvml_index | **Optional**, NVML device index when `gpu_device=nvidia` (default `0`) | `0` |
+
+### NVIDIA GPUs (proprietary driver)
+
+The proprietary NVIDIA driver does not expose any hwmon sensors, so `sensors` shows no temperature for the card
+(and the program would otherwise pick up the integrated GPU, e.g. `amdgpu edge`, instead). Set:
+
+```
+gpu_device=nvidia
+```
+
+With this setting the GPU temperature is read through NVML (`libnvidia-ml.so`, shipped with the NVIDIA driver).
+`gpu_temp_type`, `gpu_vendor_id` and `gpu_device_id` are ignored. If you have more than one NVIDIA GPU, select it
+with `gpu_nvml_index` (the order matches `nvidia-smi -L`).
 
 ### Service Won't Start
 
